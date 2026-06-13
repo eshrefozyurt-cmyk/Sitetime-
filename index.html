@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>SiteTime - Manpower Tracking</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: #0f172a; color: #f8fafc; min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 1rem; }
+  .center { display: flex; align-items: center; justify-content: center; min-height: 100vh; text-align: center; padding: 1rem; color: #94a3b8; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1.25rem; } h3 { font-size: 1.05rem; }
+  .card { background: #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
+  input, select, textarea {
+    width: 100%; padding: 0.75rem; border-radius: 8px; border: 1px solid #334155;
+    background: #0f172a; color: #f8fafc; font-size: 1rem; margin-bottom: 0.6rem;
+  }
+  textarea { resize: vertical; min-height: 60px; }
+  button {
+    border: none; border-radius: 8px; font-size: 1rem; font-weight: 600;
+    cursor: pointer; padding: 0.75rem; color: #fff; width: 100%;
+  }
+  .btn-primary { background: #2563eb; }
+  .btn-secondary { background: #334155; }
+  .btn-green { background: #16a34a; }
+  .btn-red { background: #dc2626; }
+  .btn-sm { width: auto; padding: 0.5rem 0.9rem; font-size: 0.85rem; }
+  .row { display: flex; gap: 0.5rem; }
+  .row > * { flex: 1; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+  .sub { color: #94a3b8; font-size: 0.8rem; }
+  .muted { color: #64748b; font-size: 0.85rem; }
+  .badge { display: inline-block; padding: 0.25rem 0.7rem; border-radius: 6px; font-size: 0.72rem; font-weight: 700; color: #0f172a; }
+  .tabs { display: flex; gap: 0.4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .tab { flex: 1; padding: 0.55rem; background: #1e293b; color: #94a3b8; font-size: 0.82rem; border-radius: 8px; min-width: 70px; }
+  .tab.active { background: #2563eb; color: #fff; }
+  .alert { padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.9rem; }
+  .alert-success { background: #14532d; color: #bbf7d0; }
+  .alert-error { background: #7f1d1d; color: #fecaca; }
+  .alert-warn { background: #78350f; color: #fde68a; }
+  .alert-info { background: #1e3a5f; color: #bfdbfe; }
+  .list-item { background: #1e293b; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem; }
+  .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+  .big-time { font-size: 1.5rem; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #334155; white-space: nowrap; }
+  th { color: #94a3b8; }
+  .scroll-x { overflow-x: auto; }
+  label.lbl { font-size: 0.75rem; color: #94a3b8; display: block; margin-bottom: 0.2rem; }
+  .qr-box { background:#fff; padding:1rem; border-radius:12px; display:inline-block; }
+  .hidden { display: none; }
+  .spinner { text-align:center; padding:2rem; color:#64748b; }
+</style>
+</head>
+<body>
+<div id="app"><div class="center">Loading...</div></div>
+
+<script>
+// ============ CONFIG ============
+const SUPABASE_URL = 'https://mjpljextlicbmcqfrpub.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qcGxqZXh0bGljYm1jcWZycHViIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzNjcxMTUsImV4cCI6MjA5Njk0MzExNX0.YuR9WONRv0aG43vr7p-mdiMpKza6aze2VbFUNx1LT4c';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const app = document.getElementById('app');
+
+let currentProfile = null;
+
+// ============ HELPERS ============
+function esc(s) { return (s==null?'':String(s)).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function fmtTime(t) { return t ? new Date(t).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : '--:--'; }
+function fmtDate(d) { return d ? new Date(d).toLocaleDateString('en-GB') : ''; }
+function todayStr() { return new Date().toISOString().split('T')[0]; }
+function round2(n) { return Math.round((n||0)*100)/100; }
+
+function statusBadge(rec) {
+  if (rec.final_status === 'approved') return '<span class="badge" style="background:#22c55e">Approved</span>';
+  if (rec.final_status === 'rejected') return '<span class="badge" style="background:#ef4444">Rejected</span>';
+  if (rec.formen_status === 'approved') return '<span class="badge" style="background:#f59e0b">Awaiting Engineer</span>';
+  return '<span class="badge" style="background:#94a3b8">Awaiting Formen</span>';
+}
+
+function getDistance(lat1,lng1,lat2,lng2){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(lat2-lat1), dLng=toRad(lng2-lng1);
+  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function getPosition(){
+  return new Promise((res,rej)=>{
+    if(!navigator.geolocation){rej(new Error('Geolocation not supported on this device.'));return;}
+    navigator.geolocation.getCurrentPosition(
+      p=>res({lat:p.coords.latitude,lng:p.coords.longitude}),
+      e=>{
+        let m='Could not get location.';
+        if(e.code===e.PERMISSION_DENIED) m='Location permission denied. You must allow location access to check in/out.';
+        else if(e.code===e.TIMEOUT) m='Location request timed out. Please try again.';
+        rej(new Error(m));
+      },
+      {enableHighAccuracy:true,timeout:10000,maximumAge:0}
+    );
+  });
+}
+
+// ============ AUTH / ROUTER ============
+async function init() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) { renderLogin(); return; }
+  await loadProfileAndRoute(session.user.id);
+}
+
+async function loadProfileAndRoute(uid) {
+  app.innerHTML = '<div class="center">Loading profile...</div>';
+  const { data, error } = await sb.from('profiles').select('*, projects(*)').eq('id', uid).single();
+  if (error || !data) {
+    app.innerHTML = `<div class="center">Profile not found. Please contact your administrator.<br><br><button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button></div>`;
+    return;
+  }
+  currentProfile = data;
+  if (data.role === 'worker') renderWorker();
+  else if (data.role === 'formen' || data.role === 'engineer') renderApproval();
+  else if (data.role === 'admin') renderAdmin();
+  else app.innerHTML = `<div class="center">Unknown role: ${esc(data.role)}</div>`;
+}
+
+sb.auth.onAuthStateChange((_e, session) => {
+  if (!session) renderLogin();
+});
+
+async function doLogout() { await sb.auth.signOut(); currentProfile = null; renderLogin(); }
+
+// ============ LOGIN ============
+function renderLogin() {
+  app.innerHTML = `
+    <div class="center">
+      <div style="width:100%;max-width:360px;">
+        <div class="card">
+          <h1 style="text-align:center;">SiteTime</h1>
+          <p class="sub" style="text-align:center;margin-bottom:1.2rem;">Construction Manpower Tracking</p>
+          <input id="email" type="email" placeholder="Email" autocapitalize="off" />
+          <input id="password" type="password" placeholder="Password" />
+          <div id="loginAlert"></div>
+          <button class="btn-primary" onclick="doLogin()">Sign In</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function doLogin() {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const al = document.getElementById('loginAlert');
+  al.innerHTML = '';
+  if (!email || !password) { al.innerHTML = '<div class="alert alert-error">Please enter email and password.</div>'; return; }
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) { al.innerHTML = `<div class="alert alert-error">${esc(error.message)}</div>`; return; }
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) await loadProfileAndRoute(session.user.id);
+}
+
+// ============ WORKER ============
+let workerToday = null;
+
+async function renderWorker() {
+  app.innerHTML = '<div class="spinner">Loading...</div>';
+  const { data: todayRec } = await sb.from('attendance_records').select('*')
+    .eq('user_id', currentProfile.id).eq('date', todayStr()).maybeSingle();
+  workerToday = todayRec;
+
+  const { data: history } = await sb.from('attendance_records').select('*')
+    .eq('user_id', currentProfile.id).order('date',{ascending:false}).limit(10);
+
+  const hasCheckIn = todayRec && todayRec.check_in_time;
+  const hasCheckOut = todayRec && todayRec.check_out_time;
+  let btnLabel = !hasCheckIn ? 'Check In' : (!hasCheckOut ? 'Check Out' : 'Completed for Today');
+  const btnDisabled = hasCheckIn && hasCheckOut;
+
+  let histHtml = '';
+  (history||[]).forEach(r=>{
+    histHtml += `<div class="list-item flex-between">
+      <div><div style="font-weight:600;font-size:0.85rem;">${fmtDate(r.date)}</div>
+      <div class="muted">${fmtTime(r.check_in_time)} → ${fmtTime(r.check_out_time)}${r.total_hours!=null?` (${r.total_hours}h)`:''}</div></div>
+      ${statusBadge(r)}</div>`;
+  });
+  if (!histHtml) histHtml = '<p class="muted">No records yet.</p>';
+
+  app.innerHTML = `
+  <div class="wrap">
+    <div class="header">
+      <div><h2>SiteTime</h2><div class="sub">${esc(currentProfile.name)} · ${esc(currentProfile.category)}</div></div>
+      <button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button>
+    </div>
+    <div class="card">
+      <p class="sub">Today</p>
+      <div class="flex-between" style="margin:0.5rem 0;">
+        <div><div class="muted">Check-In</div><div class="big-time">${fmtTime(todayRec?.check_in_time)}</div></div>
+        <div><div class="muted">Check-Out</div><div class="big-time">${fmtTime(todayRec?.check_out_time)}</div></div>
+      </div>
+      ${todayRec ? `<div style="margin-top:0.4rem;">${statusBadge(todayRec)}</div>` : ''}
+    </div>
+    <div id="wAlert"></div>
+    <button class="btn-primary" id="ciBtn" ${btnDisabled?'disabled style="opacity:0.5;"':''} onclick="doCheckInOut()">${btnLabel}</button>
+    <div style="height:0.6rem;"></div>
+    <button class="btn-secondary" onclick="showQR()">Show My QR Code</button>
+    <div style="height:1.2rem;"></div>
+    <h3 style="margin-bottom:0.5rem;">History</h3>
+    ${histHtml}
+  </div>`;
+}
+
+function showQR(){
+  const val = currentProfile.qr_code_value;
+  const url = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(val);
+  app.innerHTML = `<div class="wrap"><div class="center"><div style="width:100%;">
+    <h3 style="margin-bottom:0.5rem;">Your QR Code</h3>
+    <p class="sub" style="margin-bottom:1rem;">ID: ${esc(val)}</p>
+    <div class="qr-box"><img src="${url}" width="220" height="220" alt="QR"/></div>
+    <div style="height:1.2rem;"></div>
+    <button class="btn-secondary" onclick="renderWorker()">Back</button>
+  </div></div></div>`;
+}
+
+async function doCheckInOut(){
+  const al = document.getElementById('wAlert');
+  const btn = document.getElementById('ciBtn');
+  btn.disabled = true; btn.style.opacity='0.5';
+  al.innerHTML = '<div class="alert alert-info">Getting your location...</div>';
+  try {
+    const pos = await getPosition();
+    const proj = currentProfile.projects;
+    if (!proj) throw new Error('No project assigned to your profile. Contact your administrator.');
+    const dist = getDistance(pos.lat,pos.lng,proj.site_latitude,proj.site_longitude);
+    const within = dist <= proj.geofence_radius_meters;
+
+    if (!workerToday || !workerToday.check_in_time) {
+      const { error } = await sb.from('attendance_records').upsert({
+        user_id: currentProfile.id, project_id: currentProfile.project_id, date: todayStr(),
+        check_in_time: new Date().toISOString(), check_in_lat: pos.lat, check_in_lng: pos.lng,
+        check_in_within_geofence: within, check_in_qr_value: currentProfile.qr_code_value
+      }, { onConflict: 'user_id,date' });
+      if (error) throw new Error('Check-in failed: ' + error.message);
+      al.innerHTML = within
+        ? '<div class="alert alert-success">Checked in successfully! Awaiting approval.</div>'
+        : `<div class="alert alert-warn">Checked in, but you appear to be outside the site (${Math.round(dist)}m). This will be flagged for approval.</div>`;
+    } else if (!workerToday.check_out_time) {
+      const { error } = await sb.from('attendance_records').update({
+        check_out_time: new Date().toISOString(), check_out_lat: pos.lat, check_out_lng: pos.lng,
+        check_out_within_geofence: within, check_out_qr_value: currentProfile.qr_code_value
+      }).eq('id', workerToday.id);
+      if (error) throw new Error('Check-out failed: ' + error.message);
+      al.innerHTML = within
+        ? '<div class="alert alert-success">Checked out successfully! Awaiting approval.</div>'
+        : `<div class="alert alert-warn">Checked out, but you appear to be outside the site (${Math.round(dist)}m). This will be flagged for approval.</div>`;
+    }
+    setTimeout(renderWorker, 1500);
+  } catch(e){
+    al.innerHTML = `<div class="alert alert-error">${esc(e.message)}</div>`;
+    btn.disabled = false; btn.style.opacity='1';
+  }
+}
+
+// ============ FORMEN / ENGINEER ============
+let approvalTab = 'pending';
+
+async function renderApproval() {
+  const isFormen = currentProfile.role === 'formen';
+  app.innerHTML = '<div class="spinner">Loading...</div>';
+
+  let pending = [];
+  if (isFormen) {
+    const { data } = await sb.from('attendance_records')
+      .select('*, profiles!attendance_records_user_id_fkey(name,category,formen_id)')
+      .not('check_in_time','is',null).eq('formen_status','pending').order('date',{ascending:false});
+    pending = (data||[]).filter(r => r.profiles && r.profiles.formen_id === currentProfile.id);
+  } else {
+    const { data } = await sb.from('attendance_records')
+      .select('*, profiles!attendance_records_user_id_fkey(name,category)')
+      .eq('project_id', currentProfile.project_id)
+      .eq('formen_status','approved').eq('engineer_status','pending').order('date',{ascending:false});
+    pending = (data||[]).filter(r => r.profiles);
+  }
+
+  let histQ = sb.from('attendance_records')
+    .select('*, profiles!attendance_records_user_id_fkey(name,category)')
+    .order('date',{ascending:false}).limit(20);
+  histQ = isFormen ? histQ.eq('formen_id', currentProfile.id).neq('formen_status','pending')
+                   : histQ.eq('engineer_id', currentProfile.id).neq('engineer_status','pending');
+  const { data: history } = await histQ;
+
+  let pendHtml = '';
+  pending.forEach(r=>{
+    pendHtml += `<div class="card">
+      <div class="flex-between" style="margin-bottom:0.6rem;">
+        <div><div style="font-weight:700;">${esc(r.profiles.name)}</div>
+        <div class="sub">${esc(r.profiles.category)} · ${fmtDate(r.date)}</div></div>
+        ${!isFormen?'<span class="badge" style="background:#1e3a5f;color:#bfdbfe">Formen OK</span>':''}
+      </div>
+      <div class="row" style="margin-bottom:0.6rem;">
+        <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
+          <div class="muted">In</div><div style="font-weight:700;">${fmtTime(r.check_in_time)}</div>
+          ${r.check_in_within_geofence===false?'<div style="color:#fbbf24;font-size:0.65rem;">⚠ Off-site</div>':''}
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
+          <div class="muted">Out</div><div style="font-weight:700;">${fmtTime(r.check_out_time)}</div>
+          ${r.check_out_within_geofence===false?'<div style="color:#fbbf24;font-size:0.65rem;">⚠ Off-site</div>':''}
+        </div>
+        <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
+          <div class="muted">Total</div><div style="font-weight:700;">${r.total_hours!=null?r.total_hours+'h':'--'}</div>
+        </div>
+      </div>
+      ${!r.check_out_time?'<p style="color:#fbbf24;font-size:0.8rem;margin-bottom:0.5rem;">Check-out not done yet.</p>':''}
+      <div id="rej_${r.id}"></div>
+      <div class="row">
+        <button class="btn-green" onclick="approveRec('${r.id}',${isFormen})">✓ Approve</button>
+        <button class="btn-red" onclick="showReject('${r.id}')">✕ Reject</button>
+      </div>
+    </div>`;
+  });
+  if (!pendHtml) pendHtml = '<p class="muted" style="text-align:center;margin-top:2rem;">No records awaiting approval.</p>';
+
+  let histHtml = '';
+  (history||[]).forEach(r=>{
+    const st = isFormen ? r.formen_status : r.engineer_status;
+    const cm = isFormen ? r.formen_comment : r.engineer_comment;
+    histHtml += `<div class="list-item">
+      <div class="flex-between">
+        <div><div style="font-weight:600;">${esc(r.profiles?.name)}</div>
+        <div class="sub">${esc(r.profiles?.category)} · ${fmtDate(r.date)}</div></div>
+        <span class="badge" style="background:${st==='approved'?'#22c55e':'#ef4444'}">${st==='approved'?'Approved':'Rejected'}</span>
+      </div>
+      <div class="muted" style="margin-top:0.3rem;">${fmtTime(r.check_in_time)} → ${fmtTime(r.check_out_time)}${r.total_hours!=null?` (${r.total_hours}h)`:''}</div>
+      ${cm?`<div style="color:#cbd5e1;font-size:0.8rem;font-style:italic;margin-top:0.3rem;">Note: ${esc(cm)}</div>`:''}
+      ${isFormen && r.engineer_status==='rejected'?`<div style="color:#fca5a5;font-size:0.8rem;margin-top:0.3rem;">⚠ Rejected by engineer: ${esc(r.engineer_comment||'')}</div>`:''}
+    </div>`;
+  });
+  if (!histHtml) histHtml = '<p class="muted" style="text-align:center;margin-top:2rem;">No history.</p>';
+
+  app.innerHTML = `
+  <div class="wrap">
+    <div class="header">
+      <div><h2>SiteTime</h2><div class="sub">${esc(currentProfile.name)} · ${isFormen?'Formen Panel':'Engineer Panel'}</div></div>
+      <button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button>
+    </div>
+    <div class="tabs">
+      <button class="tab ${approvalTab==='pending'?'active':''}" onclick="setApprovalTab('pending')">Pending (${pending.length})</button>
+      <button class="tab ${approvalTab==='history'?'active':''}" onclick="setApprovalTab('history')">History</button>
+    </div>
+    <div>${approvalTab==='pending'?pendHtml:histHtml}</div>
+  </div>`;
+}
+
+function setApprovalTab(t){ approvalTab=t; renderApproval(); }
+
+function showReject(id){
+  document.getElementById('rej_'+id).innerHTML = `
+    <textarea id="rejcom_${id}" placeholder="Rejection reason (required)"></textarea>
+    <div class="row" style="margin-bottom:0.5rem;">
+      <button class="btn-red" onclick="confirmReject('${id}',${currentProfile.role==='formen'})">Confirm Reject</button>
+      <button class="btn-secondary" onclick="renderApproval()">Cancel</button>
+    </div>`;
+}
+
+async function approveRec(id, isFormen){
+  const upd = isFormen
+    ? { formen_status:'approved', formen_id:currentProfile.id, formen_action_time:new Date().toISOString(), formen_comment:null }
+    : { engineer_status:'approved', engineer_id:currentProfile.id, engineer_action_time:new Date().toISOString(), engineer_comment:null };
+  const { error } = await sb.from('attendance_records').update(upd).eq('id', id);
+  if (error) { alert('Approve failed: ' + error.message); return; }
+  renderApproval();
+}
+
+async function confirmReject(id, isFormen){
+  const com = document.getElementById('rejcom_'+id).value.trim();
+  if (!com) { alert('Rejection reason is required.'); return; }
+  const upd = isFormen
+    ? { formen_status:'rejected', formen_id:currentProfile.id, formen_action_time:new Date().toISOString(), formen_comment:com }
+    : { engineer_status:'rejected', engineer_id:currentProfile.id, engineer_action_time:new Date().toISOString(), engineer_comment:com };
+  const { error } = await sb.from('attendance_records').update(upd).eq('id', id);
+  if (error) { alert('Reject failed: ' + error.message); return; }
+  renderApproval();
+}
+
+// ============ ADMIN ============
+let adminTab = 'reports';
+let adminProjects = [], adminUsers = [];
+let repStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+let repEnd = todayStr();
+
+async function renderAdmin() {
+  app.innerHTML = '<div class="spinner">Loading...</div>';
+  const [{ data: projs }, { data: usrs }] = await Promise.all([
+    sb.from('projects').select('*').order('created_at'),
+    sb.from('profiles').select('*').order('created_at')
+  ]);
+  adminProjects = projs || []; adminUsers = usrs || [];
+
+  app.innerHTML = `
+  <div class="wrap">
+    <div class="header">
+      <div><h2>SiteTime</h2><div class="sub">${esc(currentProfile.name)} · Admin Panel</div></div>
+      <button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button>
+    </div>
+    <div class="tabs">
+      <button class="tab ${adminTab==='reports'?'active':''}" onclick="setAdminTab('reports')">Reports</button>
+      <button class="tab ${adminTab==='projects'?'active':''}" onclick="setAdminTab('projects')">Projects</button>
+      <button class="tab ${adminTab==='users'?'active':''}" onclick="setAdminTab('users')">Users</button>
+    </div>
+    <div id="adminBody"></div>
+  </div>`;
+  renderAdminBody();
+}
+
+function setAdminTab(t){ adminTab=t; renderAdminBody(); }
+
+async function renderAdminBody(){
+  const body = document.getElementById('adminBody');
+  if (adminTab==='reports') { await renderReports(body); }
+  else if (adminTab==='projects') { renderProjects(body); }
+  else { renderUsers(body); }
+}
+
+async function renderReports(body){
+  body.innerHTML = '<div class="spinner">Loading report...</div>';
+  const { data, error } = await sb.from('payroll_calculations')
+    .select('*, profiles!payroll_calculations_user_id_fkey(name,category)')
+    .gte('date', repStart).lte('date', repEnd);
+
+  const cats = ['usta','helper','formen','engineer'];
+  const sum = {}; cats.forEach(c=>sum[c]={people:new Set(),reg:0,ot:0,pay:0});
+  let grand=0;
+  (data||[]).forEach(r=>{
+    const c=r.profiles?.category; if(!c||!sum[c])return;
+    sum[c].people.add(r.user_id); sum[c].reg+=Number(r.regular_hours||0);
+    sum[c].ot+=Number(r.overtime_hours||0); sum[c].pay+=Number(r.total_pay||0);
+    grand+=Number(r.total_pay||0);
+  });
+
+  let rows='';
+  cats.forEach(c=>{
+    const s=sum[c];
+    rows+=`<tr><td>${c}</td><td>${s.people.size}</td><td>${round2(s.reg)}</td><td>${round2(s.ot)}</td><td>${round2(s.reg+s.ot)}</td><td>${round2(s.pay)}</td></tr>`;
+  });
+
+  body.innerHTML = `
+    <div class="row">
+      <div><label class="lbl">Start</label><input type="date" id="repS" value="${repStart}" onchange="updRep()"/></div>
+      <div><label class="lbl">End</label><input type="date" id="repE" value="${repEnd}" onchange="updRep()"/></div>
+    </div>
+    <div class="card scroll-x">
+      <table>
+        <thead><tr><th>Category</th><th>People</th><th>Reg. h</th><th>OT h</th><th>Total h</th><th>Total Pay</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td colspan="5" style="font-weight:700;border-top:2px solid #334155;">Grand Total</td><td style="font-weight:700;border-top:2px solid #334155;">${round2(grand)}</td></tr></tfoot>
+      </table>
+    </div>
+    <p class="muted" style="margin-bottom:0.6rem;">Based on ${(data||[]).length} approved records (only final_status=approved counts).</p>
+    <button class="btn-primary" onclick='exportCSV(${JSON.stringify(rows.replace(/<[^>]+>/g,"|"))})'>Download CSV</button>
+  `;
+}
+
+function updRep(){ repStart=document.getElementById('repS').value; repEnd=document.getElementById('repE').value; renderReports(document.getElementById('adminBody')); }
+
+function exportCSV(){
+  // rebuild from current DOM table
+  const rows=[...document.querySelectorAll('#adminBody table tr')].map(tr=>
+    [...tr.querySelectorAll('th,td')].map(td=>td.textContent.trim()).join(',')).join('\n');
+  const csv = rows + `\n\nDate Range,${repStart} - ${repEnd}`;
+  const blob = new Blob([csv],{type:'text/csv'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=`sitetime_report_${repStart}_${repEnd}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderProjects(body){
+  let list='';
+  adminProjects.forEach(p=>{
+    list+=`<div class="list-item"><div style="font-weight:600;">${esc(p.name)}</div>
+      <div class="sub">${p.site_latitude}, ${p.site_longitude} · Geofence ${p.geofence_radius_meters}m · ${p.standard_daily_hours}h/day</div></div>`;
+  });
+  body.innerHTML = `
+    <button class="btn-secondary" onclick="toggleProjForm()">+ New Project</button>
+    <div id="projForm" class="hidden card" style="margin-top:1rem;">
+      <input id="pName" placeholder="Project Name"/>
+      <div class="row"><input id="pLat" type="number" step="any" placeholder="Latitude"/><input id="pLng" type="number" step="any" placeholder="Longitude"/></div>
+      <div class="row"><input id="pRad" type="number" placeholder="Geofence (m)" value="200"/><input id="pHrs" type="number" placeholder="Daily hours" value="8"/></div>
+      <button class="btn-green" onclick="createProject()">Save</button>
+    </div>
+    <div style="height:1rem;"></div>${list||'<p class="muted">No projects yet.</p>'}`;
+}
+
+function toggleProjForm(){ document.getElementById('projForm').classList.toggle('hidden'); }
+
+async function createProject(){
+  const name=document.getElementById('pName').value.trim();
+  const lat=parseFloat(document.getElementById('pLat').value);
+  const lng=parseFloat(document.getElementById('pLng').value);
+  const rad=parseInt(document.getElementById('pRad').value)||200;
+  const hrs=parseFloat(document.getElementById('pHrs').value)||8;
+  if(!name||isNaN(lat)||isNaN(lng)){ alert('Please fill name, latitude and longitude.'); return; }
+  const { error } = await sb.from('projects').insert({ name, site_latitude:lat, site_longitude:lng, geofence_radius_meters:rad, standard_daily_hours:hrs });
+  if(error){ alert('Failed: '+error.message); return; }
+  await renderAdmin();
+}
+
+function renderUsers(body){
+  const formenList = adminUsers.filter(u=>u.role==='formen');
+  let projOpts = '<option value="">-- Select Project --</option>' + adminProjects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  let formenOpts = '<option value="">-- Select Formen --</option>' + formenList.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('');
+
+  let list='';
+  adminUsers.forEach(u=>{
+    const qr='https://api.qrserver.com/v1/create-qr-code/?size=48x48&data='+encodeURIComponent(u.qr_code_value);
+    list+=`<div class="list-item flex-between">
+      <div><div style="font-weight:600;">${esc(u.name)}</div>
+      <div class="sub">${esc(u.email)} · ${esc(u.role)}/${esc(u.category)} · ${u.hourly_rate}/h</div></div>
+      <img src="${qr}" width="48" height="48"/></div>`;
+  });
+
+  body.innerHTML = `
+    <button class="btn-secondary" onclick="toggleUserForm()">+ New User</button>
+    <div id="userForm" class="hidden card" style="margin-top:1rem;">
+      <input id="uName" placeholder="Full Name"/>
+      <input id="uEmail" type="email" placeholder="Email" autocapitalize="off"/>
+      <input id="uPass" type="password" placeholder="Password (min 6 chars)"/>
+      <div class="row">
+        <select id="uRole" onchange="onRoleChange()">
+          <option value="worker">Worker</option><option value="formen">Formen</option>
+          <option value="engineer">Engineer</option><option value="admin">Admin</option>
+        </select>
+        <select id="uCat">
+          <option value="usta">Usta</option><option value="helper">Helper</option>
+          <option value="formen">Formen</option><option value="engineer">Engineer</option>
+        </select>
+      </div>
+      <select id="uProj">${projOpts}</select>
+      <div id="formenWrap"><select id="uFormen">${formenOpts}</select></div>
+      <div class="row"><input id="uRate" type="number" step="any" placeholder="Hourly Rate" value="0"/><input id="uMult" type="number" step="any" placeholder="OT Multiplier" value="1.5"/></div>
+      <button class="btn-green" onclick="createUser()">Create User</button>
+    </div>
+    <div style="height:1rem;"></div>${list||'<p class="muted">No users yet.</p>'}`;
+}
+
+function toggleUserForm(){ document.getElementById('userForm').classList.toggle('hidden'); }
+function onRoleChange(){ /* formen select always visible, harmless */ }
+
+async function createUser(){
+  const name=document.getElementById('uName').value.trim();
+  const email=document.getElementById('uEmail').value.trim();
+  const pass=document.getElementById('uPass').value;
+  const role=document.getElementById('uRole').value;
+  const cat=document.getElementById('uCat').value;
+  const proj=document.getElementById('uProj').value;
+  const formen=document.getElementById('uFormen').value;
+  const rate=parseFloat(document.getElementById('uRate').value)||0;
+  const mult=parseFloat(document.getElementById('uMult').value)||1.5;
+  if(!name||!email||pass.length<6){ alert('Fill name, email and a password of at least 6 characters.'); return; }
+
+  const { data: authData, error: authErr } = await sb.auth.signUp({ email, password: pass, options:{ data:{ name } } });
+  if(authErr){ alert('User creation failed: '+authErr.message); return; }
+  if(!authData.user){ alert('User created but no ID returned (email confirmation may be on).'); return; }
+
+  const { error: profErr } = await sb.from('profiles').update({
+    role, category:cat, project_id: proj||null, formen_id: formen||null, hourly_rate:rate, overtime_multiplier:mult
+  }).eq('id', authData.user.id);
+  if(profErr){ alert('Profile update failed: '+profErr.message); return; }
+
+  // signUp logs in as the new user; restore admin session
+  alert('User created: '+email+'\n\nNote: you may need to log in again as admin.');
+  await renderAdmin();
+}
+
+// ============ START ============
+init();
+</script>
+</body>
+</html>
