@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <title>SiteTime - Manpower Tracking</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/html5-qrcode"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   body {
@@ -156,7 +157,9 @@ function renderLogin() {
           <input id="email" type="email" placeholder="Email" autocapitalize="off" />
           <input id="password" type="password" placeholder="Password" />
           <div id="loginAlert"></div>
-          <button class="btn-primary" onclick="doLogin()">Sign In</button>
+          <button class="btn-primary" onclick="doLogin()">Sign In (Manager)</button>
+          <div style="height:0.6rem;"></div>
+          <button class="btn-secondary" onclick="renderKiosk()">📷 Worker Check-In Station</button>
         </div>
       </div>
     </div>`;
@@ -172,6 +175,135 @@ async function doLogin() {
   if (error) { al.innerHTML = `<div class="alert alert-error">${esc(error.message)}</div>`; return; }
   const { data: { session } } = await sb.auth.getSession();
   if (session) await loadProfileAndRoute(session.user.id);
+}
+
+// ============ KIOSK (Worker QR Check-In Station) ============
+let kioskScanner = null;
+
+function renderKiosk() {
+  stopKioskScanner();
+  app.innerHTML = `
+  <div class="wrap">
+    <div class="header">
+      <div><h2>SiteTime</h2><div class="sub">Worker Check-In Station</div></div>
+      <button class="btn-secondary btn-sm" onclick="exitKiosk()">Exit</button>
+    </div>
+    <div class="card" style="text-align:center;">
+      <p class="sub" style="margin-bottom:0.8rem;">Scan your QR code to check in or out.</p>
+      <div id="kiosk-reader" style="width:100%;min-height:280px;background:#000;border-radius:12px;overflow:hidden;margin-bottom:0.8rem;"></div>
+      <p class="muted">or enter passport number manually:</p>
+      <input id="kioskPassport" placeholder="Passport No" autocapitalize="characters" />
+      <button class="btn-primary" onclick="kioskManual()">Check In / Out</button>
+    </div>
+    <div id="kioskAlert"></div>
+  </div>`;
+  startKioskScanner();
+}
+
+function exitKiosk(){ stopKioskScanner(); renderLogin(); }
+
+function startKioskScanner(){
+  setTimeout(()=>{
+    const el = document.getElementById('kiosk-reader');
+    if (!el || typeof Html5Qrcode === 'undefined') return;
+    try {
+      kioskScanner = new Html5Qrcode('kiosk-reader');
+      kioskScanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 },
+        (decoded)=>{ handleKioskScan(decoded); },
+        ()=>{});
+    } catch(e){ /* camera not available, manual entry still works */ }
+  }, 400);
+}
+
+function stopKioskScanner(){
+  if (kioskScanner) {
+    try { kioskScanner.stop().then(()=>kioskScanner.clear()).catch(()=>{}); } catch(e){}
+    kioskScanner = null;
+  }
+}
+
+let kioskBusy = false;
+
+async function handleKioskScan(qrValue){
+  if (kioskBusy) return;
+  kioskBusy = true;
+  await processWorkerCheckInOut({ qr_code_value: qrValue });
+  setTimeout(()=>{ kioskBusy = false; }, 3000);
+}
+
+async function kioskManual(){
+  const pp = document.getElementById('kioskPassport').value.trim();
+  if (!pp) { setKioskAlert('error','Please enter a passport number.'); return; }
+  await processWorkerCheckInOut({ passport_no: pp });
+}
+
+function setKioskAlert(type, msg){
+  const a = document.getElementById('kioskAlert');
+  if (a) a.innerHTML = `<div class="alert alert-${type}">${esc(msg)}</div>`;
+}
+
+async function processWorkerCheckInOut(lookup){
+  setKioskAlert('info','Looking up worker...');
+
+  // find the worker profile by qr or passport
+  let q = sb.from('profiles').select('*').eq('role','worker');
+  if (lookup.qr_code_value) q = q.eq('qr_code_value', lookup.qr_code_value);
+  else q = q.eq('passport_no', lookup.passport_no);
+  const { data: worker, error } = await q.maybeSingle();
+
+  if (error) { setKioskAlert('error','Lookup failed: ' + error.message); return; }
+  if (!worker) { setKioskAlert('error','Worker not found. Check the QR code or passport number.'); return; }
+
+  // get worker's project for geofence
+  let project = null;
+  if (worker.project_id) {
+    const { data: proj } = await sb.from('projects').select('*').eq('id', worker.project_id).maybeSingle();
+    project = proj;
+  }
+
+  setKioskAlert('info', `${worker.name}: getting location...`);
+
+  let pos = null, within = null, dist = null;
+  try {
+    pos = await getPosition();
+    if (project) {
+      dist = getDistance(pos.lat, pos.lng, project.site_latitude, project.site_longitude);
+      within = dist <= project.geofence_radius_meters;
+    }
+  } catch(e) {
+    setKioskAlert('error', e.message);
+    return;
+  }
+
+  // find today's record
+  const { data: todayRec } = await sb.from('attendance_records').select('*')
+    .eq('user_id', worker.id).eq('date', todayStr()).maybeSingle();
+
+  if (!todayRec || !todayRec.check_in_time) {
+    const { error: e2 } = await sb.from('attendance_records').upsert({
+      user_id: worker.id, project_id: worker.project_id, date: todayStr(),
+      check_in_time: new Date().toISOString(), check_in_lat: pos.lat, check_in_lng: pos.lng,
+      check_in_within_geofence: within, check_in_qr_value: worker.qr_code_value
+    }, { onConflict: 'user_id,date' });
+    if (e2) { setKioskAlert('error','Check-in failed: ' + e2.message); return; }
+    setKioskAlert(within===false?'warn':'success',
+      `✓ ${worker.name} CHECKED IN at ${fmtTime(new Date().toISOString())}` +
+      (within===false?` (off-site ${Math.round(dist)}m)`:''));
+  } else if (!todayRec.check_out_time) {
+    const { error: e3 } = await sb.from('attendance_records').update({
+      check_out_time: new Date().toISOString(), check_out_lat: pos.lat, check_out_lng: pos.lng,
+      check_out_within_geofence: within, check_out_qr_value: worker.qr_code_value
+    }).eq('id', todayRec.id);
+    if (e3) { setKioskAlert('error','Check-out failed: ' + e3.message); return; }
+    setKioskAlert(within===false?'warn':'success',
+      `✓ ${worker.name} CHECKED OUT at ${fmtTime(new Date().toISOString())}` +
+      (within===false?` (off-site ${Math.round(dist)}m)`:''));
+  } else {
+    setKioskAlert('info', `${worker.name} has already checked in and out today.`);
+  }
+
+  const ppInput = document.getElementById('kioskPassport');
+  if (ppInput) ppInput.value = '';
 }
 
 // ============ WORKER ============
@@ -526,9 +658,10 @@ function renderUsers(body){
   let list='';
   adminUsers.forEach(u=>{
     const qr='https://api.qrserver.com/v1/create-qr-code/?size=48x48&data='+encodeURIComponent(u.qr_code_value);
+    const idInfo = u.role==='worker' ? ('Passport: ' + esc(u.passport_no||'-')) : esc(u.email||'-');
     list+=`<div class="list-item flex-between">
       <div><div style="font-weight:600;">${esc(u.name)}</div>
-      <div class="sub">${esc(u.email)} · ${esc(u.role)}/${esc(u.category)} · ${u.hourly_rate}/h</div></div>
+      <div class="sub">${idInfo} · ${esc(u.role)}/${esc(u.category)} · ${u.hourly_rate}/h</div></div>
       <img src="${qr}" width="48" height="48"/></div>`;
   });
 
@@ -536,8 +669,6 @@ function renderUsers(body){
     <button class="btn-secondary" onclick="toggleUserForm()">+ New User</button>
     <div id="userForm" class="hidden card" style="margin-top:1rem;">
       <input id="uName" placeholder="Full Name"/>
-      <input id="uEmail" type="email" placeholder="Email" autocapitalize="off"/>
-      <input id="uPass" type="password" placeholder="Password (min 6 chars)"/>
       <div class="row">
         <select id="uRole" onchange="onRoleChange()">
           <option value="worker">Worker</option><option value="formen">Formen</option>
@@ -548,6 +679,19 @@ function renderUsers(body){
           <option value="formen">Formen</option><option value="engineer">Engineer</option>
         </select>
       </div>
+
+      <!-- Worker fields: passport (no login) -->
+      <div id="workerFields">
+        <input id="uPassport" placeholder="Passport No (required)" autocapitalize="characters"/>
+        <p class="muted" style="margin-bottom:0.6rem;">Workers don't log in. They check in at the Worker Station using their QR code.</p>
+      </div>
+
+      <!-- Manager fields: email + password -->
+      <div id="managerFields" class="hidden">
+        <input id="uEmail" type="email" placeholder="Email" autocapitalize="off"/>
+        <input id="uPass" type="password" placeholder="Password (min 6 chars)"/>
+      </div>
+
       <select id="uProj">${projOpts}</select>
       <div id="formenWrap"><select id="uFormen">${formenOpts}</select></div>
       <div class="row"><input id="uRate" type="number" step="any" placeholder="Hourly Rate" value="0"/><input id="uMult" type="number" step="any" placeholder="OT Multiplier" value="1.5"/></div>
@@ -556,33 +700,76 @@ function renderUsers(body){
     <div style="height:1rem;"></div>${list||'<p class="muted">No users yet.</p>'}`;
 }
 
-function toggleUserForm(){ document.getElementById('userForm').classList.toggle('hidden'); }
-function onRoleChange(){ /* formen select always visible, harmless */ }
+function toggleUserForm(){
+  const f = document.getElementById('userForm');
+  f.classList.toggle('hidden');
+  if (!f.classList.contains('hidden')) onRoleChange();
+}
+
+function onRoleChange(){
+  const role = document.getElementById('uRole').value;
+  const workerFields = document.getElementById('workerFields');
+  const managerFields = document.getElementById('managerFields');
+  const formenWrap = document.getElementById('formenWrap');
+  if (role === 'worker') {
+    workerFields.classList.remove('hidden');
+    managerFields.classList.add('hidden');
+    formenWrap.classList.remove('hidden');
+  } else {
+    workerFields.classList.add('hidden');
+    managerFields.classList.remove('hidden');
+    formenWrap.classList.add('hidden');
+  }
+}
 
 async function createUser(){
   const name=document.getElementById('uName').value.trim();
-  const email=document.getElementById('uEmail').value.trim();
-  const pass=document.getElementById('uPass').value;
   const role=document.getElementById('uRole').value;
   const cat=document.getElementById('uCat').value;
   const proj=document.getElementById('uProj').value;
   const formen=document.getElementById('uFormen').value;
   const rate=parseFloat(document.getElementById('uRate').value)||0;
   const mult=parseFloat(document.getElementById('uMult').value)||1.5;
-  if(!name||!email||pass.length<6){ alert('Fill name, email and a password of at least 6 characters.'); return; }
 
-  const { data: authData, error: authErr } = await sb.auth.signUp({ email, password: pass, options:{ data:{ name } } });
-  if(authErr){ alert('User creation failed: '+authErr.message); return; }
-  if(!authData.user){ alert('User created but no ID returned (email confirmation may be on).'); return; }
+  if(!name){ alert('Please enter a name.'); return; }
 
-  const { error: profErr } = await sb.from('profiles').update({
-    role, category:cat, project_id: proj||null, formen_id: formen||null, hourly_rate:rate, overtime_multiplier:mult
-  }).eq('id', authData.user.id);
-  if(profErr){ alert('Profile update failed: '+profErr.message); return; }
+  if (role === 'worker') {
+    // Workers: no auth account, insert directly into profiles with passport
+    const passport = document.getElementById('uPassport').value.trim();
+    if (!passport) { alert('Passport number is required for workers.'); return; }
 
-  // signUp logs in as the new user; restore admin session
-  alert('User created: '+email+'\n\nNote: you may need to log in again as admin.');
-  await renderAdmin();
+    const { error } = await sb.from('profiles').insert({
+      name, passport_no: passport, role: 'worker', category: cat,
+      project_id: proj||null, formen_id: formen||null,
+      hourly_rate: rate, overtime_multiplier: mult
+    });
+    if (error) {
+      if (error.message.includes('duplicate') || error.message.includes('unique'))
+        alert('A worker with this passport number already exists.');
+      else alert('Failed to create worker: ' + error.message);
+      return;
+    }
+    alert('Worker created: ' + name + '. Their QR code is now available in the list below.');
+    await renderAdmin();
+  } else {
+    // Managers (formen/engineer/admin): email + password auth account
+    const email=document.getElementById('uEmail').value.trim();
+    const pass=document.getElementById('uPass').value;
+    if(!email || pass.length<6){ alert('Managers need an email and a password of at least 6 characters.'); return; }
+
+    const { data: authData, error: authErr } = await sb.auth.signUp({ email, password: pass, options:{ data:{ name } } });
+    if(authErr){ alert('User creation failed: '+authErr.message); return; }
+    if(!authData.user){ alert('User created but no ID returned (email confirmation may be on).'); return; }
+
+    const { error: profErr } = await sb.from('profiles').update({
+      name, email, role, category:cat, project_id: proj||null, formen_id: formen||null,
+      hourly_rate:rate, overtime_multiplier:mult
+    }).eq('id', authData.user.id);
+    if(profErr){ alert('Profile update failed: '+profErr.message); return; }
+
+    alert('Manager created: '+email+'\n\nNote: creating a manager may log you in as that new user. If so, log out and sign back in as admin.');
+    await renderAdmin();
+  }
 }
 
 // ============ START ============
