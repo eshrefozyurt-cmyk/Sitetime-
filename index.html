@@ -116,10 +116,21 @@ async function init() {
 
 async function loadProfileAndRoute(uid) {
   app.innerHTML = '<div class="center">Loading profile...</div>';
-  const { data, error } = await sb.from('profiles').select('*, projects(*)').eq('id', uid).single();
-  if (error || !data) {
-    app.innerHTML = `<div class="center">Profile not found. Please contact your administrator.<br><br><button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button></div>`;
+  const { data, error } = await sb.from('profiles').select('*').eq('id', uid).maybeSingle();
+  if (error) {
+    app.innerHTML = `<div class="center">Error loading profile:<br><br>${esc(error.message)}<br><br><button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button></div>`;
     return;
+  }
+  if (!data) {
+    app.innerHTML = `<div class="center">Profile not found for this user (id: ${esc(uid)}). Please contact your administrator.<br><br><button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button></div>`;
+    return;
+  }
+  // fetch the assigned project separately (optional)
+  if (data.project_id) {
+    const { data: proj } = await sb.from('projects').select('*').eq('id', data.project_id).maybeSingle();
+    data.projects = proj || null;
+  } else {
+    data.projects = null;
   }
   currentProfile = data;
   if (data.role === 'worker') renderWorker();
