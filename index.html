@@ -81,8 +81,8 @@ function round2(n) { return Math.round((n||0)*100)/100; }
 function statusBadge(rec) {
   if (rec.final_status === 'approved') return '<span class="badge" style="background:#22c55e">Approved</span>';
   if (rec.final_status === 'rejected') return '<span class="badge" style="background:#ef4444">Rejected</span>';
-  if (rec.formen_status === 'approved') return '<span class="badge" style="background:#f59e0b">Awaiting Engineer</span>';
-  return '<span class="badge" style="background:#94a3b8">Awaiting Formen</span>';
+  if (rec.formen_status === 'approved') return '<span class="badge" style="background:#f59e0b">Awaiting Admin</span>';
+  return '<span class="badge" style="background:#94a3b8">Awaiting Engineer</span>';
 }
 
 function getDistance(lat1,lng1,lat2,lng2){
@@ -411,29 +411,24 @@ async function doCheckInOut(){
 let approvalTab = 'pending';
 
 async function renderApproval() {
-  const isFormen = currentProfile.role === 'formen';
+  // In this workflow: Engineer = 1st approval (uses formen_status field).
+  // Admin does the 2nd/final approval in the Admin panel (uses engineer_status field).
   app.innerHTML = '<div class="spinner">Loading...</div>';
 
-  let pending = [];
-  if (isFormen) {
-    const { data } = await sb.from('attendance_records')
-      .select('*, profiles!attendance_records_user_id_fkey(name,category,formen_id)')
-      .not('check_in_time','is',null).eq('formen_status','pending').order('date',{ascending:false});
-    pending = (data||[]).filter(r => r.profiles && r.profiles.formen_id === currentProfile.id);
-  } else {
-    const { data } = await sb.from('attendance_records')
-      .select('*, profiles!attendance_records_user_id_fkey(name,category)')
-      .eq('project_id', currentProfile.project_id)
-      .eq('formen_status','approved').eq('engineer_status','pending').order('date',{ascending:false});
-    pending = (data||[]).filter(r => r.profiles);
-  }
-
-  let histQ = sb.from('attendance_records')
+  // Engineer sees raw checked-in records for their project, awaiting 1st approval
+  const { data } = await sb.from('attendance_records')
     .select('*, profiles!attendance_records_user_id_fkey(name,category)')
+    .eq('project_id', currentProfile.project_id)
+    .not('check_in_time','is',null)
+    .eq('formen_status','pending')
+    .order('date',{ascending:false});
+  const pending = (data||[]).filter(r => r.profiles);
+
+  // History: records this engineer has acted on
+  const { data: history } = await sb.from('attendance_records')
+    .select('*, profiles!attendance_records_user_id_fkey(name,category)')
+    .eq('formen_id', currentProfile.id).neq('formen_status','pending')
     .order('date',{ascending:false}).limit(20);
-  histQ = isFormen ? histQ.eq('formen_id', currentProfile.id).neq('formen_status','pending')
-                   : histQ.eq('engineer_id', currentProfile.id).neq('engineer_status','pending');
-  const { data: history } = await histQ;
 
   let pendHtml = '';
   pending.forEach(r=>{
@@ -441,7 +436,6 @@ async function renderApproval() {
       <div class="flex-between" style="margin-bottom:0.6rem;">
         <div><div style="font-weight:700;">${esc(r.profiles.name)}</div>
         <div class="sub">${esc(r.profiles.category)} · ${fmtDate(r.date)}</div></div>
-        ${!isFormen?'<span class="badge" style="background:#1e3a5f;color:#bfdbfe">Formen OK</span>':''}
       </div>
       <div class="row" style="margin-bottom:0.6rem;">
         <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
@@ -459,7 +453,7 @@ async function renderApproval() {
       ${!r.check_out_time?'<p style="color:#fbbf24;font-size:0.8rem;margin-bottom:0.5rem;">Check-out not done yet.</p>':''}
       <div id="rej_${r.id}"></div>
       <div class="row">
-        <button class="btn-green" onclick="approveRec('${r.id}',${isFormen})">✓ Approve</button>
+        <button class="btn-green" onclick="engineerApprove('${r.id}')">✓ Approve</button>
         <button class="btn-red" onclick="showReject('${r.id}')">✕ Reject</button>
       </div>
     </div>`;
@@ -468,8 +462,8 @@ async function renderApproval() {
 
   let histHtml = '';
   (history||[]).forEach(r=>{
-    const st = isFormen ? r.formen_status : r.engineer_status;
-    const cm = isFormen ? r.formen_comment : r.engineer_comment;
+    const st = r.formen_status;
+    const cm = r.formen_comment;
     histHtml += `<div class="list-item">
       <div class="flex-between">
         <div><div style="font-weight:600;">${esc(r.profiles?.name)}</div>
@@ -478,7 +472,8 @@ async function renderApproval() {
       </div>
       <div class="muted" style="margin-top:0.3rem;">${fmtTime(r.check_in_time)} → ${fmtTime(r.check_out_time)}${r.total_hours!=null?` (${r.total_hours}h)`:''}</div>
       ${cm?`<div style="color:#cbd5e1;font-size:0.8rem;font-style:italic;margin-top:0.3rem;">Note: ${esc(cm)}</div>`:''}
-      ${isFormen && r.engineer_status==='rejected'?`<div style="color:#fca5a5;font-size:0.8rem;margin-top:0.3rem;">⚠ Rejected by engineer: ${esc(r.engineer_comment||'')}</div>`:''}
+      ${r.final_status==='approved'?'<div style="color:#86efac;font-size:0.8rem;margin-top:0.3rem;">✓ Final approved by admin</div>':''}
+      ${r.engineer_status==='rejected'?`<div style="color:#fca5a5;font-size:0.8rem;margin-top:0.3rem;">⚠ Rejected by admin: ${esc(r.engineer_comment||'')}</div>`:''}
     </div>`;
   });
   if (!histHtml) histHtml = '<p class="muted" style="text-align:center;margin-top:2rem;">No history.</p>';
@@ -486,7 +481,7 @@ async function renderApproval() {
   app.innerHTML = `
   <div class="wrap">
     <div class="header">
-      <div><h2>SiteTime</h2><div class="sub">${esc(currentProfile.name)} · ${isFormen?'Formen Panel':'Engineer Panel'}</div></div>
+      <div><h2>SiteTime</h2><div class="sub">${esc(currentProfile.name)} · Engineer Panel (1st Approval)</div></div>
       <button class="btn-secondary btn-sm" onclick="doLogout()">Log out</button>
     </div>
     <div class="tabs">
@@ -503,26 +498,22 @@ function showReject(id){
   document.getElementById('rej_'+id).innerHTML = `
     <textarea id="rejcom_${id}" placeholder="Rejection reason (required)"></textarea>
     <div class="row" style="margin-bottom:0.5rem;">
-      <button class="btn-red" onclick="confirmReject('${id}',${currentProfile.role==='formen'})">Confirm Reject</button>
+      <button class="btn-red" onclick="engineerReject('${id}')">Confirm Reject</button>
       <button class="btn-secondary" onclick="renderApproval()">Cancel</button>
     </div>`;
 }
 
-async function approveRec(id, isFormen){
-  const upd = isFormen
-    ? { formen_status:'approved', formen_id:currentProfile.id, formen_action_time:new Date().toISOString(), formen_comment:null }
-    : { engineer_status:'approved', engineer_id:currentProfile.id, engineer_action_time:new Date().toISOString(), engineer_comment:null };
+async function engineerApprove(id){
+  const upd = { formen_status:'approved', formen_id:currentProfile.id, formen_action_time:new Date().toISOString(), formen_comment:null };
   const { error } = await sb.from('attendance_records').update(upd).eq('id', id);
   if (error) { alert('Approve failed: ' + error.message); return; }
   renderApproval();
 }
 
-async function confirmReject(id, isFormen){
+async function engineerReject(id){
   const com = document.getElementById('rejcom_'+id).value.trim();
   if (!com) { alert('Rejection reason is required.'); return; }
-  const upd = isFormen
-    ? { formen_status:'rejected', formen_id:currentProfile.id, formen_action_time:new Date().toISOString(), formen_comment:com }
-    : { engineer_status:'rejected', engineer_id:currentProfile.id, engineer_action_time:new Date().toISOString(), engineer_comment:com };
+  const upd = { formen_status:'rejected', formen_id:currentProfile.id, formen_action_time:new Date().toISOString(), formen_comment:com };
   const { error } = await sb.from('attendance_records').update(upd).eq('id', id);
   if (error) { alert('Reject failed: ' + error.message); return; }
   renderApproval();
@@ -550,6 +541,7 @@ async function renderAdmin() {
     </div>
     <div class="tabs">
       <button class="tab ${adminTab==='reports'?'active':''}" onclick="setAdminTab('reports')">Reports</button>
+      <button class="tab ${adminTab==='approvals'?'active':''}" onclick="setAdminTab('approvals')">Approvals</button>
       <button class="tab ${adminTab==='projects'?'active':''}" onclick="setAdminTab('projects')">Projects</button>
       <button class="tab ${adminTab==='users'?'active':''}" onclick="setAdminTab('users')">Users</button>
     </div>
@@ -563,8 +555,72 @@ function setAdminTab(t){ adminTab=t; renderAdminBody(); }
 async function renderAdminBody(){
   const body = document.getElementById('adminBody');
   if (adminTab==='reports') { await renderReports(body); }
+  else if (adminTab==='approvals') { await renderAdminApprovals(body); }
   else if (adminTab==='projects') { renderProjects(body); }
   else { renderUsers(body); }
+}
+
+async function renderAdminApprovals(body){
+  // Admin = 2nd/final approval. Sees records the engineer has approved (formen_status='approved')
+  // that still await admin's approval (engineer_status='pending').
+  body.innerHTML = '<div class="spinner">Loading...</div>';
+
+  const { data } = await sb.from('attendance_records')
+    .select('*, profiles!attendance_records_user_id_fkey(name,category)')
+    .eq('formen_status','approved').eq('engineer_status','pending')
+    .order('date',{ascending:false});
+  const pending = (data||[]).filter(r => r.profiles);
+
+  let html = '';
+  pending.forEach(r=>{
+    html += `<div class="card">
+      <div class="flex-between" style="margin-bottom:0.6rem;">
+        <div><div style="font-weight:700;">${esc(r.profiles.name)}</div>
+        <div class="sub">${esc(r.profiles.category)} · ${fmtDate(r.date)}</div></div>
+        <span class="badge" style="background:#1e3a5f;color:#bfdbfe">Engineer OK</span>
+      </div>
+      <div class="row" style="margin-bottom:0.6rem;">
+        <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
+          <div class="muted">In</div><div style="font-weight:700;">${fmtTime(r.check_in_time)}</div></div>
+        <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
+          <div class="muted">Out</div><div style="font-weight:700;">${fmtTime(r.check_out_time)}</div></div>
+        <div style="background:#0f172a;border-radius:8px;padding:0.5rem;text-align:center;">
+          <div class="muted">Total</div><div style="font-weight:700;">${r.total_hours!=null?r.total_hours+'h':'--'}</div></div>
+      </div>
+      <div id="arej_${r.id}"></div>
+      <div class="row">
+        <button class="btn-green" onclick="adminApprove('${r.id}')">✓ Final Approve</button>
+        <button class="btn-red" onclick="showAdminReject('${r.id}')">✕ Reject</button>
+      </div>
+    </div>`;
+  });
+  if (!html) html = '<p class="muted" style="text-align:center;margin-top:2rem;">No records awaiting final approval.</p>';
+  body.innerHTML = html;
+}
+
+function showAdminReject(id){
+  document.getElementById('arej_'+id).innerHTML = `
+    <textarea id="arejcom_${id}" placeholder="Rejection reason (required)"></textarea>
+    <div class="row" style="margin-bottom:0.5rem;">
+      <button class="btn-red" onclick="adminReject('${id}')">Confirm Reject</button>
+      <button class="btn-secondary" onclick="renderAdminBody()">Cancel</button>
+    </div>`;
+}
+
+async function adminApprove(id){
+  const upd = { engineer_status:'approved', engineer_id:currentProfile.id, engineer_action_time:new Date().toISOString(), engineer_comment:null };
+  const { error } = await sb.from('attendance_records').update(upd).eq('id', id);
+  if (error) { alert('Approve failed: ' + error.message); return; }
+  renderAdminBody();
+}
+
+async function adminReject(id){
+  const com = document.getElementById('arejcom_'+id).value.trim();
+  if (!com) { alert('Rejection reason is required.'); return; }
+  const upd = { engineer_status:'rejected', engineer_id:currentProfile.id, engineer_action_time:new Date().toISOString(), engineer_comment:com };
+  const { error } = await sb.from('attendance_records').update(upd).eq('id', id);
+  if (error) { alert('Reject failed: ' + error.message); return; }
+  renderAdminBody();
 }
 
 async function renderReports(body){
