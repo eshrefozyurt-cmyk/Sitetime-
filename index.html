@@ -659,9 +659,12 @@ function renderUsers(body){
   adminUsers.forEach(u=>{
     const qr='https://api.qrserver.com/v1/create-qr-code/?size=48x48&data='+encodeURIComponent(u.qr_code_value);
     const idInfo = u.role==='worker' ? ('Passport: ' + esc(u.passport_no||'-')) : esc(u.email||'-');
+    const proj = adminProjects.find(p => p.id === u.project_id);
+    const projName = proj ? esc(proj.name) : 'No project';
     list+=`<div class="list-item flex-between">
       <div><div style="font-weight:600;">${esc(u.name)}</div>
-      <div class="sub">${idInfo} · ${esc(u.role)}/${esc(u.category)} · ${u.hourly_rate}/h</div></div>
+      <div class="sub">${idInfo} · ${esc(u.role)}/${esc(u.category)} · ${u.hourly_rate}/h</div>
+      <div class="sub" style="color:#60a5fa;">📍 ${projName}</div></div>
       <img src="${qr}" width="48" height="48"/></div>`;
   });
 
